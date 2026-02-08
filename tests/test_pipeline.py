@@ -113,14 +113,14 @@ def test_extract_ner_tokens_filters_and_normalizes() -> None:
     def fake_ner(text: str) -> list[dict[str, str]]:
         if "Иванов" in text:
             return [
-                {"entity_group": "PER", "word": "Иванов"},
-                {"entity_group": "PERSON", "word": "Иван##ович"},
+                {"entity_group": "LAST_NAME", "word": "Иванов"},
+                {"entity_group": "MIDDLE_NAME", "word": "Иван##ович"},
                 {"entity_group": "ORG", "word": "ACME"},
             ]
         if "John" in text:
             return [
-                {"entity": "B-PER", "word": "John"},
-                {"entity": "I-PER", "word": "Doe"},
+                {"entity": "LAST_NAME", "word": "John"},
+                {"entity": "FIRST_NAME", "word": "Doe"},
                 {"entity": "LOC", "word": "Paris"},
             ]
         return []

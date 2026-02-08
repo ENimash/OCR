@@ -148,18 +148,16 @@ def _extract_paddle_texts(result: object) -> list[str]:
 
 def _extract_ner_tokens(ner: Pipeline, lines: Iterable[str]) -> list[str]:
     tokens: list[str] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        entities = ner(line)
-        for entity in entities:
-            label = entity.get("entity_group") or entity.get("entity", "")
-            if label in {"PER", "PERSON"} or label.endswith("PER"):
-                word = entity.get("word", "").replace("##", "")
-                tokens.extend(_tokenize(word))
+    text = " ".join(lines)
+    entities = ner(text)
+    print(entities)
+    for entity in entities:
+        label = entity.get("entity_group")
+        if label in {"LAST_NAME", "FIRST_NAME", "MIDDLE_NAME"}:
+            word = entity.get("word", "").replace("##", "")
+            tokens.extend(_tokenize(word))
     cyrillic_tokens = [token for token in tokens if _is_cyrillic(token)]
     return _normalize_tokens(cyrillic_tokens)
-
 
 def _tokenize(text: str) -> list[str]:
     return [token for token in TOKEN_RE.findall(text) if len(token) > 1]
