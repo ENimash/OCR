@@ -126,17 +126,10 @@ def test_extract_ner_tokens_filters_and_normalizes() -> None:
         return []
 
     lines = ["Иванов Иванович", "John Doe", " "]
+    text = "".join(lines)
 
     ner = cast(pl.Pipeline, fake_ner)
-    assert pl._extract_ner_tokens(ner, lines) == ["Иванов", "Иванович"]
-
-
-def test_tokenize_filters_short_and_symbols() -> None:
-    assert pl._tokenize("A Li Jean-Pierre Иван-Иванович Q") == [
-        "Li",
-        "Jean-Pierre",
-        "Иван-Иванович",
-    ]
+    assert pl._extract_ner_tokens(ner, text) == ["Иванов", "Иванович"]
 
 
 def test_normalize_tokens_titlecases_and_dedups() -> None:
@@ -146,11 +139,6 @@ def test_normalize_tokens_titlecases_and_dedups() -> None:
 
 def test_titlecase_token_handles_hyphens() -> None:
     assert pl._titlecase_token("iVaN-ivanov") == "Ivan-Ivanov"
-
-
-def test_select_tokens_from_lines_prefers_max_tokens() -> None:
-    lines = ["ABC", "Иван Иванов", "Петр"]
-    assert pl._select_tokens_from_lines(lines, pl._is_cyrillic) == ["Иван", "Иванов"]
 
 
 def test_assign_ru_with_patronymic_suffix() -> None:
@@ -175,9 +163,3 @@ def test_pick_patronymic_and_is_patronymic() -> None:
     assert pl._pick_patronymic(tokens) == "Петрович"
     assert pl._is_patronymic("Кызы") is True
     assert pl._is_patronymic("Smith") is False
-
-
-def test_is_cyrillic_predicate() -> None:
-    assert pl._is_cyrillic("Иван") is True
-    assert pl._is_cyrillic("John") is False
-    assert pl._is_cyrillic("ИванJohn") is False

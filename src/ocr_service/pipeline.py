@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
+from typing import Final
 
 import cv2
 import numpy as np
@@ -20,9 +21,34 @@ from transformers import (
 )
 from transformers.pipelines.token_classification import AggregationStrategy
 
-CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
-LATIN_RE = re.compile(r"[A-Za-z]")
-TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё-]+")
+WHITESPACE_RE: Final = re.compile(r"\s+")
+
+TRAILING_ADMIN_WORDS_RE: Final = re.compile(
+    r"\b(республика|край|субъект|область|российской|федерации)\b.*$",
+    flags=re.IGNORECASE,
+)
+NUM_TOKEN_RE: Final = re.compile(r"\b\d+[\/\.\-]?\d*\b")
+SINGLE_LETTER_RE: Final = re.compile(r"\b[а-яa-z]\b", flags=re.IGNORECASE)
+NON_WORD_RE: Final = re.compile(r"[^\w\sа-я]", flags=re.IGNORECASE)
+LATIN_WORD_2PLUS_RE: Final = re.compile(r"\b[a-z]{2,}\b", flags=re.IGNORECASE)
+ALNUM_TOKEN_RE: Final = re.compile(r"\b\S*\d\S*\b")
+LAT2RU: Final = str.maketrans(
+    {
+        "a": "а",
+        "b": "в",
+        "c": "с",
+        "e": "е",
+        "h": "н",
+        "k": "к",
+        "m": "м",
+        "o": "о",
+        "p": "р",
+        "t": "т",
+        "x": "х",
+        "y": "у",
+    }
+)
+DOC_STOPWORDS: Final = {"ру"}
 PATRONYMIC_SUFFIXES = (
     "вич",
     "вна",
@@ -34,7 +60,6 @@ PATRONYMIC_SUFFIXES = (
     "оглы",
     "кызы",
 )
-MAX_OCR_SIDE = 4000
 
 
 @dataclass(frozen=True)
@@ -81,12 +106,10 @@ class OcrPipeline:
     def process(self, image_bytes: bytes) -> ExtractResult:
         image = _preprocess_image(image_bytes)
         lines = _run_ocr(self._ocr, image)
-        ner_tokens = _extract_ner_tokens(self._ner, lines)
-        ru_tokens = ner_tokens
-        if len(ru_tokens) < 2:
-            ru_tokens = _select_tokens_from_lines(lines, _is_cyrillic)
-
-        ru_fio = _assign_ru(ru_tokens)
+        text = " ".join(lines)
+        clean_text = _clean_for_ner(text)
+        ner_tokens = _extract_ner_tokens(self._ner, clean_text)
+        ru_fio = _assign_ru(ner_tokens)
         return ExtractResult(ru=ru_fio, ocr_result=lines)
 
 
@@ -111,21 +134,13 @@ def _build_ner_pipeline(model_name: str, device_name: str) -> Pipeline:
 
 
 def _preprocess_image(image_bytes: bytes) -> np.ndarray:
-    image = Image.open(BytesIO(image_bytes))
-    image = image.convert("RGB")
-    image = _resize_image(image, MAX_OCR_SIDE)
+    image = Image.open(BytesIO(image_bytes)).convert("RGB")
+    image = image.resize((960, 1280), resample=Image.Resampling.LANCZOS)
     array = np.array(image)
-    return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
-
-
-def _resize_image(image: Image.Image, max_side: int) -> Image.Image:
-    width, height = image.size
-    max_dim = max(width, height)
-    if max_dim <= max_side:
-        return image
-    scale = max_side / max_dim
-    new_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
-    return image.resize(new_size, resample=Image.Resampling.LANCZOS)
+    bgr = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
 def _run_ocr(ocr: PaddleOCR, image: np.ndarray) -> list[str]:
@@ -146,21 +161,33 @@ def _extract_paddle_texts(result: object) -> list[str]:
     return info["rec_texts"]
 
 
-def _extract_ner_tokens(ner: Pipeline, lines: Iterable[str]) -> list[str]:
+def _clean_for_ner(text: str) -> str:
+    text = WHITESPACE_RE.sub(" ", text).lower().strip()
+    text = TRAILING_ADMIN_WORDS_RE.sub("", text).strip()
+    text = NUM_TOKEN_RE.sub(" ", text)
+    text = SINGLE_LETTER_RE.sub(" ", text)
+    text = NON_WORD_RE.sub(" ", text)
+    text = WHITESPACE_RE.sub(" ", text)
+    text = LATIN_WORD_2PLUS_RE.sub(" ", text)
+    text = ALNUM_TOKEN_RE.sub(" ", text)
+    text = WHITESPACE_RE.sub(" ", text).strip()
+    text = text.translate(LAT2RU)
+
+    text = " ".join(w for w in text.split() if w not in DOC_STOPWORDS)
+
+    return text
+
+
+def _extract_ner_tokens(ner: Pipeline, text: str) -> list[str]:
     tokens: list[str] = []
-    text = " ".join(lines)
     entities = ner(text)
-    print(entities)
+
     for entity in entities:
         label = entity.get("entity_group")
         if label in {"LAST_NAME", "FIRST_NAME", "MIDDLE_NAME"}:
             word = entity.get("word", "").replace("##", "")
-            tokens.extend(_tokenize(word))
-    cyrillic_tokens = [token for token in tokens if _is_cyrillic(token)]
-    return _normalize_tokens(cyrillic_tokens)
-
-def _tokenize(text: str) -> list[str]:
-    return [token for token in TOKEN_RE.findall(text) if len(token) > 1]
+            tokens.append(word)
+    return _normalize_tokens(tokens)
 
 
 def _normalize_tokens(tokens: Iterable[str]) -> list[str]:
@@ -183,16 +210,6 @@ def _titlecase_token(token: str) -> str:
     parts = token.split("-")
     titled = [part[:1].upper() + part[1:].lower() if part else "" for part in parts]
     return "-".join(titled)
-
-
-def _select_tokens_from_lines(lines: Iterable[str], predicate: Callable[[str], bool]) -> list[str]:
-    # Берем строку с максимальным числом токенов, если NER ничего не дал.
-    best: list[str] = []
-    for line in lines:
-        tokens = [token for token in _tokenize(line) if predicate(token)]
-        if len(tokens) > len(best):
-            best = tokens
-    return _normalize_tokens(best)
 
 
 def _assign_ru(tokens: list[str]) -> FioData:
@@ -221,7 +238,3 @@ def _pick_patronymic(tokens: list[str]) -> str | None:
 def _is_patronymic(token: str) -> bool:
     lower = token.lower()
     return any(lower.endswith(suffix) for suffix in PATRONYMIC_SUFFIXES)
-
-
-def _is_cyrillic(token: str) -> bool:
-    return bool(CYRILLIC_RE.search(token)) and not bool(LATIN_RE.search(token))
