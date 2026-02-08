@@ -17,4 +17,14 @@ class MultiFio(BaseModel):
     en: Fio
 
 
-FioResponse = Fio | MultiFio
+class FioWithOcr(Fio):
+    ocr_result: list[str]
+
+
+class MultiFioWithOcr(BaseModel):
+    ru: Fio
+    en: Fio
+    ocr_result: list[str]
+
+
+FioResponse = FioWithOcr | MultiFioWithOcr

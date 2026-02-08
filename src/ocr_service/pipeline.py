@@ -49,6 +49,7 @@ class FioData:
 class ExtractResult:
     ru: FioData
     en: FioData | None
+    ocr_result: list[str]
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ class OcrPipeline:
 
         ru_fio = _assign_ru(ru_tokens)
         en_fio = _assign_en(en_tokens) if en_tokens else None
-        return ExtractResult(ru=ru_fio, en=en_fio)
+        return ExtractResult(ru=ru_fio, en=en_fio, ocr_result=lines)
 
 
 def _env_to_bool(name: str, default: bool) -> bool:
