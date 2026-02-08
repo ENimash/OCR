@@ -6,8 +6,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from io import BytesIO
 
+import cv2
 import numpy as np
-from easyocr import Reader
+from paddleocr import PaddleOCR
 from PIL import Image
 from transformers import (
     AutoModelForTokenClassification,
@@ -33,6 +34,7 @@ PATRONYMIC_SUFFIXES = (
     "оглы",
     "кызы",
 )
+MAX_OCR_SIDE = 4000
 
 
 @dataclass(frozen=True)
@@ -48,30 +50,24 @@ class FioData:
 @dataclass(frozen=True)
 class ExtractResult:
     ru: FioData
-    en: FioData | None
     ocr_result: list[str]
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    ocr_langs: tuple[str, ...]
     ner_model_name: str
     ner_device: str
-    easyocr_gpu: bool
+    paddleocr_gpu: bool
 
     @staticmethod
     def from_env() -> PipelineConfig:
-        ocr_langs = tuple(
-            lang.strip() for lang in os.getenv("OCR_LANGS", "ru,en").split(",") if lang.strip()
-        )
-        ner_model_name = os.getenv("NER_MODEL_NAME", "zaalbar/rubert-finetuned-ner")
+        ner_model_name = os.getenv("NER_MODEL_NAME", "Gherman/bert-base-NER-Russian")
         ner_device = os.getenv("NER_DEVICE", "cpu").lower()
-        easyocr_gpu = _env_to_bool("EASYOCR_GPU", default=False)
+        paddleocr_gpu = _env_to_bool("PADDLEOCR_GPU", default=False)
         return PipelineConfig(
-            ocr_langs=ocr_langs,
             ner_model_name=ner_model_name,
             ner_device=ner_device,
-            easyocr_gpu=easyocr_gpu,
+            paddleocr_gpu=paddleocr_gpu,
         )
 
 
@@ -79,24 +75,19 @@ class OcrPipeline:
     def __init__(self, config: PipelineConfig | None = None) -> None:
         if config is None:
             config = PipelineConfig.from_env()
-        self._reader = Reader(list(config.ocr_langs), gpu=config.easyocr_gpu)
+        self._ocr = PaddleOCR(lang="ru", use_textline_orientation=True)
         self._ner = _build_ner_pipeline(config.ner_model_name, config.ner_device)
 
     def process(self, image_bytes: bytes) -> ExtractResult:
         image = _preprocess_image(image_bytes)
-        lines = _run_ocr(self._reader, image)
+        lines = _run_ocr(self._ocr, image)
         ner_tokens = _extract_ner_tokens(self._ner, lines)
-        ru_tokens = [token for token in ner_tokens if _is_cyrillic(token)]
-        en_tokens = [token for token in ner_tokens if _is_latin(token)]
-
+        ru_tokens = ner_tokens
         if len(ru_tokens) < 2:
             ru_tokens = _select_tokens_from_lines(lines, _is_cyrillic)
-        if len(en_tokens) < 2:
-            en_tokens = _select_tokens_from_lines(lines, _is_latin)
 
         ru_fio = _assign_ru(ru_tokens)
-        en_fio = _assign_en(en_tokens) if en_tokens else None
-        return ExtractResult(ru=ru_fio, en=en_fio, ocr_result=lines)
+        return ExtractResult(ru=ru_fio, ocr_result=lines)
 
 
 def _env_to_bool(name: str, default: bool) -> bool:
@@ -121,13 +112,38 @@ def _build_ner_pipeline(model_name: str, device_name: str) -> Pipeline:
 
 def _preprocess_image(image_bytes: bytes) -> np.ndarray:
     image = Image.open(BytesIO(image_bytes))
-    image = image.convert("L")
-    return np.array(image)
+    image = image.convert("RGB")
+    image = _resize_image(image, MAX_OCR_SIDE)
+    array = np.array(image)
+    return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _run_ocr(reader: Reader, image: np.ndarray) -> list[str]:
-    lines = reader.readtext(image, detail=0, paragraph=False)
+def _resize_image(image: Image.Image, max_side: int) -> Image.Image:
+    width, height = image.size
+    max_dim = max(width, height)
+    if max_dim <= max_side:
+        return image
+    scale = max_side / max_dim
+    new_size = (max(1, int(round(width * scale))), max(1, int(round(height * scale))))
+    return image.resize(new_size, resample=Image.Resampling.LANCZOS)
+
+
+def _run_ocr(ocr: PaddleOCR, image: np.ndarray) -> list[str]:
+    result = ocr.ocr(image)
+    lines = _extract_paddle_texts(result)
     return [line.strip() for line in lines if line and line.strip()]
+
+
+def _extract_paddle_texts(result: object) -> list[str]:
+    if not isinstance(result, list):
+        return []
+
+    info = result[0]
+
+    if "rec_texts" not in info:
+        return []
+
+    return info["rec_texts"]
 
 
 def _extract_ner_tokens(ner: Pipeline, lines: Iterable[str]) -> list[str]:
@@ -141,7 +157,8 @@ def _extract_ner_tokens(ner: Pipeline, lines: Iterable[str]) -> list[str]:
             if label in {"PER", "PERSON"} or label.endswith("PER"):
                 word = entity.get("word", "").replace("##", "")
                 tokens.extend(_tokenize(word))
-    return _normalize_tokens(tokens)
+    cyrillic_tokens = [token for token in tokens if _is_cyrillic(token)]
+    return _normalize_tokens(cyrillic_tokens)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -196,17 +213,6 @@ def _assign_ru(tokens: list[str]) -> FioData:
     return FioData(name=name, surname=surname, patronymic=patronymic)
 
 
-def _assign_en(tokens: list[str]) -> FioData:
-    if not tokens:
-        return FioData(name=None, surname=None, patronymic=None)
-
-    surname = tokens[0] if len(tokens) > 0 else None
-    name = tokens[1] if len(tokens) > 1 else None
-    patronymic = tokens[2] if len(tokens) > 2 else None
-
-    return FioData(name=name, surname=surname, patronymic=patronymic)
-
-
 def _pick_patronymic(tokens: list[str]) -> str | None:
     for token in tokens:
         if _is_patronymic(token):
@@ -221,7 +227,3 @@ def _is_patronymic(token: str) -> bool:
 
 def _is_cyrillic(token: str) -> bool:
     return bool(CYRILLIC_RE.search(token)) and not bool(LATIN_RE.search(token))
-
-
-def _is_latin(token: str) -> bool:
-    return bool(LATIN_RE.search(token)) and not bool(CYRILLIC_RE.search(token))

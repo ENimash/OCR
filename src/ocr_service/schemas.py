@@ -12,19 +12,8 @@ class Fio(BaseModel):
         return not (self.name or self.surname or self.patronymic)
 
 
-class MultiFio(BaseModel):
-    ru: Fio
-    en: Fio
-
-
 class FioWithOcr(Fio):
     ocr_result: list[str]
 
 
-class MultiFioWithOcr(BaseModel):
-    ru: Fio
-    en: Fio
-    ocr_result: list[str]
-
-
-FioResponse = FioWithOcr | MultiFioWithOcr
+FioResponse = FioWithOcr

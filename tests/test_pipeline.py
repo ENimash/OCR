@@ -11,17 +11,15 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
 def test_pipeline_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OCR_LANGS", "ru, en ,de")
     monkeypatch.setenv("NER_MODEL_NAME", "model-x")
     monkeypatch.setenv("NER_DEVICE", "CUDA")
-    monkeypatch.setenv("EASYOCR_GPU", "yes")
+    monkeypatch.setenv("PADDLEOCR_GPU", "yes")
 
     config = pl.PipelineConfig.from_env()
 
-    assert config.ocr_langs == ("ru", "en", "de")
     assert config.ner_model_name == "model-x"
     assert config.ner_device == "cuda"
-    assert config.easyocr_gpu is True
+    assert config.paddleocr_gpu is True
 
 
 @pytest.mark.parametrize(
@@ -90,25 +88,22 @@ def test_build_ner_pipeline_device_mapping(
     assert calls["device"] == expected_device
 
 
-def test_preprocess_image_outputs_grayscale_array() -> None:
+def test_preprocess_image_outputs_color_array() -> None:
     image_path = next(path for path in DATA_DIR.iterdir() if path.is_file())
     array = pl._preprocess_image(image_path.read_bytes())
 
     assert isinstance(array, np.ndarray)
-    assert array.ndim == 2
+    assert array.ndim == 3
+    assert array.shape[2] == 3
     assert array.size > 0
 
 
 def test_run_ocr_filters_empty_lines() -> None:
-    class ReaderStub:
-        def readtext(
-            self, image: np.ndarray, detail: int = 0, paragraph: bool = False
-        ) -> list[str | None]:
-            assert detail == 0
-            assert paragraph is False
-            return ["  Foo  ", "", " ", None, "Бар  "]
+    class OcrStub:
+        def ocr(self, image: np.ndarray) -> list[dict[str, list[str]]]:
+            return [{"rec_texts": ["Foo", "Бар"]}]
 
-    reader = ReaderStub()
+    reader = OcrStub()
     image = np.zeros((4, 4), dtype=np.uint8)
 
     assert pl._run_ocr(reader, image) == ["Foo", "Бар"]
@@ -133,7 +128,7 @@ def test_extract_ner_tokens_filters_and_normalizes() -> None:
     lines = ["Иванов Иванович", "John Doe", " "]
 
     ner = cast(pl.Pipeline, fake_ner)
-    assert pl._extract_ner_tokens(ner, lines) == ["Иванов", "Иванович", "John", "Doe"]
+    assert pl._extract_ner_tokens(ner, lines) == ["Иванов", "Иванович"]
 
 
 def test_tokenize_filters_short_and_symbols() -> None:
@@ -170,17 +165,9 @@ def test_assign_ru_fallback_patronymic() -> None:
     assert fio.patronymic == "Сергеев"
 
 
-def test_assign_en_tokens() -> None:
-    fio = pl._assign_en(["Smith", "John", "Paul"])
-    assert fio.surname == "Smith"
-    assert fio.name == "John"
-    assert fio.patronymic == "Paul"
-
-
 def test_assign_empty_returns_empty_fio() -> None:
     empty = pl.FioData(name=None, surname=None, patronymic=None)
     assert pl._assign_ru([]) == empty
-    assert pl._assign_en([]) == empty
 
 
 def test_pick_patronymic_and_is_patronymic() -> None:
@@ -190,10 +177,7 @@ def test_pick_patronymic_and_is_patronymic() -> None:
     assert pl._is_patronymic("Smith") is False
 
 
-def test_is_cyrillic_and_latin_predicates() -> None:
+def test_is_cyrillic_predicate() -> None:
     assert pl._is_cyrillic("Иван") is True
     assert pl._is_cyrillic("John") is False
-    assert pl._is_latin("John") is True
-    assert pl._is_latin("Иван") is False
     assert pl._is_cyrillic("ИванJohn") is False
-    assert pl._is_latin("ИванJohn") is False
