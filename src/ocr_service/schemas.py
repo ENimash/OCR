@@ -16,4 +16,4 @@ class FioWithOcr(Fio):
     ocr_result: list[str]
 
 
-FioResponse = FioWithOcr
+FioResponse = Fio

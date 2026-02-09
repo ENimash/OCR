@@ -23,6 +23,7 @@ wheels/
 share/python-wheels/
 *.egg-info/
 data/
+models/
 TASK.md
 .installed.cfg
 *.egg
