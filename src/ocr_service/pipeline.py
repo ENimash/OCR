@@ -137,10 +137,7 @@ def _preprocess_image(image_bytes: bytes) -> np.ndarray:
     image = Image.open(BytesIO(image_bytes)).convert("RGB")
     image = image.resize((960, 1280), resample=Image.Resampling.LANCZOS)
     array = np.array(image)
-    bgr = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+    return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
 def _run_ocr(ocr: PaddleOCR, image: np.ndarray) -> list[str]:
